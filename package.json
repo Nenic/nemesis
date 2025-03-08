@@ -1,0 +1,23 @@
+{
+  "name": "nemesis",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "3": "^2.1.0",
+    "discord.js": "^14.18.0",
+    "node-cron": "^3.0.3",
+    "node-fetch": "^3.3.2",
+    "node-schedule": "^2.1.1",
+    "puppeteer": "^24.3.1",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  }
+}
