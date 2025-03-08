@@ -10,7 +10,7 @@ let buttonCollectorPACC = null;
 let buttonCollectorFACC = null;
 
 /**
- * Zwraca efektywną datę wg reguły:
+ * Zwraca efektywną datę wg reguły: 
  * jeśli godzina < 10, odejmujemy jeden dzień i ustawiamy czas na 00:00.
  */
 function getEffectiveDate(date) {
@@ -31,44 +31,50 @@ function daysBetween(date1, date2) {
 }
 
 /**
- * Zwraca emoji wskaźnika w zależności od czasu, który upłynął od lastChecked.
- * Przyjmujemy:
- *   <1 min → 🟩, 1-5 min → ⬜, 5-15 min → 🟨, 15-30 min → 🟧, 30 min-1h → 🟥, 1h+ → 🌸.
+ * Formatuje upływ czasu od lastChecked do teraz:
+ * - <60 sek: Xsec
+ * - <60 min: Ymin
+ * - <24h: Zh
+ * - >=24h: Nd
+ * Jeśli lastChecked nie jest ustawione, traktujemy, że minęło 24h.
+ * @param {number|null} lastChecked - timestamp
+ * @returns {string}
  */
-function getStatusIndicator(lastChecked) {
-  if (!lastChecked) return "🌸";
-  const diffMinutes = (Date.now() - lastChecked) / 60000;
-  if (diffMinutes < 1) return "🟩";
-  else if (diffMinutes < 5) return "⬜";
-  else if (diffMinutes < 15) return "🟨";
-  else if (diffMinutes < 30) return "🟧";
-  else if (diffMinutes < 60) return "🟥";
-  else return "🌸";
+function formatElapsed(lastChecked) {
+  const effective = lastChecked ? lastChecked : Date.now() - (24 * 60 * 60 * 1000);
+  const diffSec = Math.floor((Date.now() - effective) / 1000);
+  if (diffSec < 60) return `${diffSec}sec`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}min`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `${diffH}h`;
+  const diffD = Math.floor(diffH / 24);
+  return `${diffD}d`;
 }
 
 /**
- * Buduje tekst tabeli z listą bossów oraz legendą.
+ * Buduje tekst tabeli z listą bossów.
+ * Wyświetla: nazwa bossa, czas upływu od ostatniego kliknięcia oraz klikalną wzmiankę lastChecker.
+ * Legenda została usunięta.
  */
 function buildTable(bossData) {
   let tableStr = "";
   bossData.forEach(boss => {
     const namePadded = boss.bossName.padEnd(18, ' ');
-    const status = getStatusIndicator(boss.lastChecked);
+    const elapsed = formatElapsed(boss.lastChecked);
     const checker = boss.lastChecker ? ` <@${boss.lastChecker}>` : "";
-    tableStr += `${namePadded}  ${status}${checker}\n`;
+    tableStr += `${namePadded}  ${elapsed}${checker}\n`;
   });
-  tableStr += "\nLegenda:\n";
-  tableStr += "🟩 <1min | ⬜ 1-5min | 🟨 5-15min | 🟧 15-30min | 🟥 30min-1h | 🌸 1h+ lub nie sprawdzony\n";
   return tableStr;
 }
 
 /**
- * Buduje przyciski na podstawie podanej grupy bossów.
+ * Buduje przyciski dla danej grupy bossów.
  */
-function buildButtonsForGroup(groupBossData) {
+function buildButtonsForGroup(groupData) {
   let actionRows = [];
   let currentRow = new ActionRowBuilder();
-  groupBossData.forEach((boss, index) => {
+  groupData.forEach((boss, index) => {
     const button = new ButtonBuilder()
       .setCustomId(`reset_${boss.bossName}`)
       .setLabel(`${boss.bossName} ${boss.chance}%`)
@@ -80,7 +86,6 @@ function buildButtonsForGroup(groupBossData) {
     }
   });
   if (currentRow.components.length > 0) actionRows.push(currentRow);
-  // Ograniczenie do 5 wierszy (max 25 przycisków)
   if (actionRows.length > 5) {
     actionRows = actionRows.slice(0, 5);
   }
@@ -88,25 +93,13 @@ function buildButtonsForGroup(groupBossData) {
 }
 
 /**
- * Grupuje bossData według strefy na podstawie konfiguracji z bossConfig.
- * Zwraca obiekt: { PACC: [...], FACC: [...] }.
- */
-function groupByZone(bossData) {
-  const groups = { PACC: [], FACC: [] };
-  bossData.forEach(boss => {
-    const config = bossConfig[boss.bossName];
-    if (config && config.zone === "PACC") groups.PACC.push(boss);
-    else if (config && config.zone === "FACC") groups.FACC.push(boss);
-  });
-  return groups;
-}
-
-/**
  * Funkcja loadBossData pobiera stan z bazy i buduje tablicę bossData.
- * Dla każdego bossa oblicza % szansy – jeśli daysElapsed > boss.maximalDays,
- * pobiera ostatnie 10 pojawień, oblicza średni interwał i ustawia flagę tilde.
- * Informacje o lastChecked oraz lastChecker są odczytywane z tabeli Bosses.
- *
+ * Oblicza % szansy na pojawienie się dla każdego bossa.
+ * Dane lastChecked oraz lastChecker pobierane są z tabeli Bosses.
+ * Jeśli liczba dni od ostatniego pojawienia przekracza boss.maximalDays,
+ * pobieramy ostatnie 10 pojawień, obliczamy średni interwał i używamy tej średniej (predykcji),
+ * dodając tilde "~" przed procentem.
+ * 
  * @param {object} db - połączenie z bazą danych.
  * @returns {Promise<Array>} - tablica obiektów bossData.
  */
@@ -136,10 +129,9 @@ async function loadBossData(db) {
         for (let i = 0; i < lastTen.length - 1; i++) {
           let d1 = new Date(lastTen[i].appearanceDate);
           let d2 = new Date(lastTen[i+1].appearanceDate);
-          d1.setHours(0, 0, 0, 0);
-          d2.setHours(0, 0, 0, 0);
-          let diff = daysBetween(d1, d2);
-          sumDiff += diff;
+          d1.setHours(0,0,0,0);
+          d2.setHours(0,0,0,0);
+          sumDiff += daysBetween(d1, d2);
           countDiff++;
         }
         if (countDiff > 0) {
@@ -172,23 +164,32 @@ async function loadBossData(db) {
       chancePercentage = ((daysElapsed - boss.minimalDays + 1) / (boss.maximalDays - boss.minimalDays + 1)) * 100;
       chancePercentage = Math.round(chancePercentage);
     }
-    if(chancePercentage >0){
-    bossData.push({
-      bossName: boss.bossName,
-      chance: flagTilde ? `~${chancePercentage}` : `${chancePercentage}`,
-      lastChecked: boss.lastChecked || null,
-      lastChecker: boss.lastChecker || null
-    });
+    if (chancePercentage > 0) {
+      bossData.push({
+        bossName: boss.bossName,
+        chance: flagTilde ? `~${chancePercentage}` : `${chancePercentage}`,
+        lastChecked: boss.lastChecked || null,
+        lastChecker: boss.lastChecker || null
+      });
+    }
   }
-}
+  // Sortujemy bossData – najdłuższy czas (czyli najwyższa wartość lastChecked) na górze,
+  // a jeśli nie ma lastChecked, traktujemy to jako 24h temu.
+  bossData.sort((a, b) => {
+    const aTime = a.lastChecked ? a.lastChecked : (Date.now() - 24 * 60 * 60 * 1000);
+    const bTime = b.lastChecked ? b.lastChecked : (Date.now() - 24 * 60 * 60 * 1000);
+    // Chcemy, aby boss z dłuższym czasem (starszy click) był wyżej
+    return aTime - bTime;
+  });
   return bossData;
 }
 
 /**
  * Główna funkcja handleBossTable:
- * - Pobiera stan z bazy (loadBossData) i aktualizuje interfejs (tabela i przyciski).
- * - Ustawia interwał co minutę, który pobiera najnowsze dane z bazy i odświeża interfejs.
- * - Przy kliknięciu przycisku aktualizuje stan w bazie (lastChecked, lastChecker) i odświeża interfejs.
+ * - Pobiera stan z bazy (loadBossData) i wysyła interfejs (tabelę oraz przyciski).
+ * - Grupuje dane według zone (PACC i FACC) i wysyła osobne wiadomości z przyciskami.
+ * - Ustawia interwał co 20 sekund, który pobiera stan z bazy i odświeża interfejs.
+ * - Collector przycisków aktualizuje stan w bazie (lastChecked, lastChecker) i odświeża interfejs.
  *
  * @param {object} db - połączenie z bazą danych.
  * @param {object} message - obiekt wiadomości Discord.
@@ -196,7 +197,7 @@ async function loadBossData(db) {
 export async function handleBossTable(db, message) {
   let bossData = await loadBossData(db);
   
-  // Aktualizacja tabeli (jedna wiadomość tekstowa)
+  // Aktualizacja tabeli – jedna wiadomość tekstowa
   const tableContent = buildTable(bossData);
   if (tableMessage) {
     try {
@@ -210,18 +211,15 @@ export async function handleBossTable(db, message) {
     tableMessage = await message.channel.send({ content: tableContent });
   }
   
-  // Grupujemy bossData według zone (PACC i FACC)
+  // Grupujemy bossData według zone
   const groups = { PACC: [], FACC: [] };
   bossData.forEach(boss => {
     const config = bossConfig[boss.bossName];
-    if (config) {
-      if (config.zone === "PACC") groups.PACC.push(boss);
-      else if (config.zone === "FACC") groups.FACC.push(boss);
-    }
+    if (config && config.zone === "PACC") groups.PACC.push(boss);
+    else if (config && config.zone === "FACC") groups.FACC.push(boss);
   });
   
-  // Aktualizacja przycisków – osobne wiadomości dla PACC i FACC
-  // Dla PACC
+  // Aktualizacja przycisków dla PACC
   const buttonsPACC = buildButtonsForGroup(groups.PACC);
   if (buttonMessagePACC) {
     try {
@@ -236,7 +234,8 @@ export async function handleBossTable(db, message) {
     buttonMessagePACC = await message.channel.send({ content: "", components: buttonsPACC });
     startCollector("PACC");
   }
-  // Dla FACC
+  
+  // Aktualizacja przycisków dla FACC
   const buttonsFACC = buildButtonsForGroup(groups.FACC);
   if (buttonMessageFACC) {
     try {
@@ -252,7 +251,7 @@ export async function handleBossTable(db, message) {
     startCollector("FACC");
   }
   
-  // Ustawiamy interwał – co minutę pobieramy stan z bazy i odświeżamy interfejs
+  // Ustawiamy interwał co 20 sekund – pobieramy stan z bazy i odświeżamy interfejs
   if (updateInterval) clearInterval(updateInterval);
   updateInterval = setInterval(async () => {
     try {
@@ -261,40 +260,15 @@ export async function handleBossTable(db, message) {
       const groups = { PACC: [], FACC: [] };
       bossData.forEach(boss => {
         const config = bossConfig[boss.bossName];
-        if (config) {
-          if (config.zone === "PACC") groups.PACC.push(boss);
-          else if (config.zone === "FACC") groups.FACC.push(boss);
-        }
+        if (config && config.zone === "PACC") groups.PACC.push(boss);
+        else if (config && config.zone === "FACC") groups.FACC.push(boss);
       });
       if (buttonMessagePACC) await buttonMessagePACC.edit({ content: "", components: buildButtonsForGroup(groups.PACC) });
       if (buttonMessageFACC) await buttonMessageFACC.edit({ content: "", components: buildButtonsForGroup(groups.FACC) });
     } catch (error) {
       console.error("Błąd podczas aktualizacji interfejsu:", error);
     }
-  }, 60000);
-  
-  // Funkcja budująca przyciski dla danej grupy bossów
-  function buildButtonsForGroup(groupData) {
-    if (!groupData || groupData.length === 0) return [];
-    let actionRows = [];
-    let currentRow = new ActionRowBuilder();
-    groupData.forEach((boss, index) => {
-      const button = new ButtonBuilder()
-        .setCustomId(`reset_${boss.bossName}`)
-        .setLabel(`${boss.bossName} ${boss.chance}%`)
-        .setStyle(ButtonStyle.Primary);
-      currentRow.addComponents(button);
-      if ((index + 1) % 5 === 0) {
-        actionRows.push(currentRow);
-        currentRow = new ActionRowBuilder();
-      }
-    });
-    if (currentRow.components.length > 0) actionRows.push(currentRow);
-    if (actionRows.length > 5) {
-      actionRows = actionRows.slice(0, 5);
-    }
-    return actionRows;
-  }
+  }, 20000);
   
   // Funkcja startCollector – uruchamia collector przycisków dla konkretnej strefy ("PACC" lub "FACC")
   function startCollector(zone) {
@@ -308,17 +282,21 @@ export async function handleBossTable(db, message) {
       const customId = interaction.customId;
       if (customId.startsWith("reset_")) {
         const bossName = customId.substring(6);
-        // Aktualizujemy stan danego bossa
         const index = bossData.findIndex(b => b.bossName === bossName);
         if (index !== -1) {
           const boss = bossData.splice(index, 1)[0];
           boss.lastChecked = Date.now();
           boss.lastChecker = interaction.user.id;
-          // Zapisujemy do bazy
           await db.run("UPDATE Bosses SET lastChecked = ?, lastChecker = ? WHERE bossName = ?", [boss.lastChecked, boss.lastChecker, boss.bossName]);
-          // Aktualizujemy interfejs – kolejne pobranie danych nastąpi przy kolejnym interwale, ale natychmiast aktualizujemy lokalnie
           try {
             if (tableMessage) await tableMessage.edit({ content: buildTable(bossData) });
+            // Po kliknięciu ponownie pobieramy stan grup z bazy
+            const groups = { PACC: [], FACC: [] };
+            bossData.forEach(b => {
+              const config = bossConfig[b.bossName];
+              if (config && config.zone === "PACC") groups.PACC.push(b);
+              else if (config && config.zone === "FACC") groups.FACC.push(b);
+            });
             if (zone === "PACC" && buttonMessagePACC) await buttonMessagePACC.edit({ content: "", components: buildButtonsForGroup(groups.PACC) });
             if (zone === "FACC" && buttonMessageFACC) await buttonMessageFACC.edit({ content: "", components: buildButtonsForGroup(groups.FACC) });
           } catch (error) {
